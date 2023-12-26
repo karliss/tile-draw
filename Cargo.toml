@@ -1,0 +1,11 @@
+[package]
+name = "tile-draw"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+whiskers = { git = "https://github.com/abey79/vsvg.git" }
+winit = {features = ["default", "x11"]}
+kurbo = "0.10.3"
