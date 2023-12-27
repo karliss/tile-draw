@@ -1,7 +1,10 @@
-use std::{vec, time::Instant};
+use std::{time::Instant, vec};
 
-use kurbo::{Affine, BezPath, Point, Vec2};
-use whiskers::{prelude::*, widgets::Widget};
+use kurbo::{Affine, BezPath, Point, Rect, Vec2};
+use whiskers::{
+    prelude::{egui::Options, *},
+    widgets::Widget,
+};
 
 #[derive(Sketch)]
 struct GridSketch {
@@ -9,10 +12,14 @@ struct GridSketch {
     width: f64,
     #[param(slider, min = 20.0, max = 400.0)]
     height: f64,
+    offset: whiskers::prelude::Point,
     #[param(slider, min = 0.001, max = 20.0)]
     line_thickness: f64,
     initial_scale: f64,
+    fixed_size_max_level: bool,
     levels: usize,
+
+    #[skip]
     tiling: TilingStep,
 }
 
@@ -48,21 +55,12 @@ struct TilingRule {
     tile: Tile,
     result: Vec<TilePlacement>,
 }
-
-#[derive(Default)]
-struct DummyWidget {}
-
-impl Widget<TilingStep> for DummyWidget {
-    fn ui(&self, ui: &mut egui::Ui, label: &str, value: &mut TilingStep) -> bool {
-        return false;
-    }
-}
-register_widget_ui!(TilingStep, DummyWidget);
 struct TilingStep {
     rules: Vec<TilingRule>,
+    expansion_factor: f64,
 }
 
-const DEFAULT_POLYGON_LIMIT:usize = 1000000;
+const DEFAULT_POLYGON_LIMIT: usize = 1000000;
 
 impl TilingStep {
     fn expand_tile(&self, placed_tile: &TilePlacement, output: &mut Vec<TilePlacement>) {
@@ -98,12 +96,65 @@ impl TilingStep {
         output.append(&mut a);
     }
 
-    fn expand_0_levels(&self, levels: usize, initial_scale: f64, output: &mut Vec<TilePlacement>) {
+    fn estimate_bounds(&self, placed_tile: &TilePlacement) -> Rect {
+        let tile = &self.rules[placed_tile.tile_id];
+        let mut result = Rect::from_origin_size(
+            placed_tile.transform.translation().to_point(),
+            (0.0_f64, 0.0_f64),
+        );
+        for p in &tile.tile.corners {
+            let p2 = placed_tile.transform * *p;
+            result = result.union_pt(p2);
+        }
+        let max_size = f64::max(result.width(), result.height());
+        return result.inflate(max_size, max_size);
+    }
+
+    fn expand_bound(
+        &self,
+        input: &Vec<TilePlacement>,
+        levels: usize,
+        bounds: kurbo::Rect,
+        output: &mut Vec<TilePlacement>,
+        max_tiles: Option<usize>,
+    ) {
+        let mut a = input.clone();
+        let mut b = Vec::new();
+        for _i in 0..levels {
+            for tile in &a {
+                let tile_bounds = self.estimate_bounds(tile);
+                if tile_bounds.intersect(bounds).is_empty() {
+                    continue;
+                }
+                self.expand_tile(&tile, &mut b);
+                if let Some(x) = max_tiles {
+                    if x < b.len() {
+                        break;
+                    }
+                }
+            }
+            std::mem::swap(&mut a, &mut b);
+            b.clear();
+        }
+        output.append(&mut a);
+    }
+
+    fn expand_0_levels(
+        &self,
+        levels: usize,
+        initial_scale: f64,
+        bounds: Option<Rect>,
+        output: &mut Vec<TilePlacement>,
+    ) {
         let input = vec![TilePlacement {
             tile_id: 1,
             transform: Affine::scale(initial_scale),
         }];
-        self.expand_levels(&input, levels, output, Some(DEFAULT_POLYGON_LIMIT));
+        if let Some(bounds) = bounds {
+            self.expand_bound(&input, levels, bounds, output, Some(DEFAULT_POLYGON_LIMIT));
+        } else {
+            self.expand_levels(&input, levels, output, Some(DEFAULT_POLYGON_LIMIT));
+        }
     }
 
     fn to_bez_path(&self, tiles: &Vec<TilePlacement>) -> BezPath {
@@ -124,7 +175,10 @@ impl TilingStep {
     }
 
     fn new() -> TilingStep {
-        TilingStep { rules: Vec::new() }
+        TilingStep {
+            rules: Vec::new(),
+            expansion_factor: 1.0,
+        }
     }
 }
 
@@ -133,8 +187,10 @@ impl Default for GridSketch {
         Self {
             width: 100.0,
             height: 100.0,
+            offset: whiskers::prelude::Point::new(0.0, 0.0),
             line_thickness: 0.5,
             initial_scale: 1.0,
+            fixed_size_max_level: false,
             tiling: TilingStep::new(),
             levels: 5,
         }
@@ -148,18 +204,29 @@ impl App for GridSketch {
 
         let mut shapes: Vec<TilePlacement> = Vec::new();
         let before = Instant::now();
+        let bounds = Rect::from_center_size(self.offset, (self.width, self.height));
+
+        let scale = if self.fixed_size_max_level {
+            self.initial_scale
+        } else {
+            self.initial_scale * self.tiling.expansion_factor.powi(self.levels as i32)
+        };
+
         self.tiling
-            .expand_0_levels(self.levels, self.initial_scale, &mut shapes);
+            .expand_0_levels(self.levels, scale, Some(bounds), &mut shapes);
         println!("Generate time: {:.2?}", before.elapsed());
         let before = Instant::now();
         let path = self.tiling.to_bez_path(&shapes);
         println!("Convert to path time: {:.2?}", before.elapsed());
         let before = Instant::now();
-        sketch.add_path(path);
+        sketch
+            .push_matrix()
+            .translate(-self.offset.x(), -self.offset.y())
+            .add_path(path)
+            .pop_matrix();
         println!("Sketch time: {:.2?}", before.elapsed());
-        
 
-        sketch.rect(0f64, 0f64, self.height, self.width);
+        sketch.rect(0f64, 0f64, self.width, self.height);
         Ok(())
     }
 }
@@ -194,6 +261,7 @@ fn main() -> Result {
                 },
             ],
         }],
+        expansion_factor: 2.0,
     };
 
     let soc_scale = 1.0 / (1.0 + 2.0 * 36_f64.to_radians().cos());
@@ -295,6 +363,7 @@ fn main() -> Result {
                 ],
             },
         ],
+        expansion_factor: 1.0 / soc_scale,
     };
 
     let mut data = GridSketch::default();
