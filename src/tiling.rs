@@ -20,6 +20,34 @@ impl Tile {
             ],
         }
     }
+
+    pub fn add_to_path(&self, out: &mut BezPath) {
+        if self.corners.is_empty() {
+            return;
+        }
+        out.move_to(self.corners[0]);
+        for p in self.corners.iter().skip(1) {
+            out.line_to(*p);
+        }
+        out.close_path();
+    }
+
+    pub fn add_to_path_t(&self, out: &mut BezPath, transform: &Affine) {
+        if self.corners.is_empty() {
+            return;
+        }
+        out.move_to(*transform * self.corners[0]);
+        for p in self.corners.iter().skip(1) {
+            out.line_to(*transform * *p);
+        }
+        out.close_path();
+    }
+
+    pub fn to_path(&self) -> BezPath {
+        let mut result = BezPath::new();
+        self.add_to_path(&mut result);
+        return result;
+    }
 }
 
 #[derive(Clone)]
@@ -137,15 +165,7 @@ impl TilingStep {
         let mut result = BezPath::new();
         for tile in tiles {
             let info = &self.rules[tile.tile_id];
-            if info.tile.corners.is_empty() {
-                continue;
-            }
-            let corners = &info.tile.corners;
-            result.move_to(tile.transform * corners[0]);
-            for corner in corners {
-                result.line_to(tile.transform * *corner);
-            }
-            result.line_to(tile.transform * corners[0]);
+            info.tile.add_to_path_t(&mut result, &tile.transform);
         }
         return result;
     }

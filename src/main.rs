@@ -1,15 +1,14 @@
 use std::{time::Instant, vec};
 
-use kurbo::{Affine, BezPath, Point, Rect, Vec2};
-use tiling::{*};
-use whiskers::{
-    prelude::{egui::Options, *},
-    widgets::Widget,
-};
+use kurbo::{Affine, Point, Rect, Vec2};
+use tiling::*;
+use whiskers::prelude::*;
+
 mod tiling;
+mod tiling_editor_ui;
 
 #[derive(Sketch)]
-struct GridSketch {
+struct TilingSketch {
     #[param(slider, min = 20.0, max = 400.0)]
     width: f64,
     #[param(slider, min = 20.0, max = 400.0)]
@@ -21,11 +20,10 @@ struct GridSketch {
     fixed_size_max_level: bool,
     levels: usize,
 
-    #[skip]
     tiling: TilingStep,
 }
 
-impl Default for GridSketch {
+impl Default for TilingSketch {
     fn default() -> Self {
         Self {
             width: 100.0,
@@ -40,7 +38,7 @@ impl Default for GridSketch {
     }
 }
 
-impl App for GridSketch {
+impl App for TilingSketch {
     fn update(&mut self, sketch: &mut Sketch, _ctx: &mut Context) -> anyhow::Result<()> {
         sketch.scale(Unit::Mm);
         sketch.stroke_width(self.line_thickness);
@@ -209,7 +207,7 @@ fn main() -> Result {
         expansion_factor: 1.0 / soc_scale,
     };
 
-    let mut data = GridSketch::default();
+    let mut data = TilingSketch::default();
     data.tiling = socolar_5;
     Runner::new(data)
         .with_page_size_options(PageSize::A5H)
