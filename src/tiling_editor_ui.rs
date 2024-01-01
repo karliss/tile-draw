@@ -1,5 +1,7 @@
 use std::ops::Mul;
 use std::sync::{Arc, Mutex};
+use std::thread::current;
+use std::vec;
 
 use crate::tiling::*;
 use egui::{emath, Id, Rect};
@@ -19,11 +21,11 @@ enum Tool {
     Move,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Selection {
     None,
     Points { shape: usize, corners: Vec<usize> },
-    Shapes { shape: Vec<usize> },
+    Shapes { shapes: Vec<usize> },
 }
 
 struct WindowState {
@@ -32,6 +34,11 @@ struct WindowState {
     draw_transform: RectTransform,
     tool: Tool,
     selection: Selection,
+    drag_transforms: Vec<Affine>,
+    drag_start_p: Pos2,
+    drag_activated: bool,
+    snap: bool,
+    last_snap_pint:Option<Pos2>,
 }
 
 impl Default for WindowState {
@@ -42,6 +49,11 @@ impl Default for WindowState {
             draw_transform: RectTransform::identity(egui::Rect::ZERO),
             tool: Tool::Select,
             selection: Selection::None,
+            drag_transforms: Vec::new(),
+            drag_start_p: Pos2::ZERO,
+            drag_activated: false,
+            snap: true,
+            last_snap_pint: None,
         }
     }
 }
@@ -59,6 +71,13 @@ fn to_point(p: Pos2) -> kurbo::Point {
 
 fn to_pos(p: kurbo::Point) -> Pos2 {
     return Pos2::new(p.x as f32, p.y as f32);
+}
+
+fn to_tile_vec(p: egui::Vec2) -> kurbo::Vec2 {
+    kurbo::Vec2 {
+        x: p.x.into(),
+        y: p.y.into(),
+    }
 }
 
 fn as_points(tile: &Tile, placement: &Affine, tr: &RectTransform) -> Vec<Pos2> {
@@ -80,6 +99,9 @@ fn rough_bounds(path: &BezPath, transform: &RectTransform) -> Rect {
     return res;
 }
 
+const DRAG_START: f64 = 5.0;
+const SNAP_DISTANCE: f64 = 0.04;
+
 impl WindowState {
     fn display_shapes(
         &mut self,
@@ -87,33 +109,26 @@ impl WindowState {
         value: &mut TilingStep,
         (response, painter): &(Response, Painter),
     ) {
-        if response.clicked() {
-            self.selection = Selection::None;
-        }
+        let mut clicked_something = false;
 
-        let current_rule = &value.rules[self.current_tile];
+        let current_rule = value.rules[self.current_tile].clone();
         let mouse_pos = ui
             .input(|inp| inp.pointer.hover_pos())
             .unwrap_or(Pos2::new(0.0, 0.0));
         let draw_mouse_pos = to_point(self.draw_transform.inverse().transform_pos(mouse_pos));
 
-      
-
-        let current_rule = &value.rules[self.current_tile];
         for (j, shape) in current_rule.result.iter().enumerate() {
             let tile = &value.rules[shape.tile_id].tile;
 
             let points = as_points(tile, &shape.transform, &self.draw_transform);
             for (i, p) in points.iter().enumerate() {
-                let point_rect = Rect::from_center_size(*p, Vec2::new(8.0, 8.0));
+                let point_rect = Rect::from_center_size(*p, egui::Vec2::new(8.0, 8.0));
                 let point_resp = ui.interact(
                     point_rect,
                     response.id.with("point").with(j).with(i),
                     Sense::drag(),
                 );
                 if point_resp.hovered() {
-                    
-
                     painter.circle(
                         *p,
                         7.0,
@@ -122,7 +137,7 @@ impl WindowState {
                     );
                 }
                 if point_resp.clicked() {
-                    println!("corner click");
+                    clicked_something = true;
                     let shift = ui.input(|x| x.modifiers.shift);
                     if !shift {
                         self.selection = Selection::Points {
@@ -172,7 +187,7 @@ impl WindowState {
 
             let mut stroke = Stroke::new(1.0, Color32::BLACK);
             match &self.selection {
-                Selection::Shapes { shape } if shape.contains(&j) => {
+                Selection::Shapes { shapes: shape } if shape.contains(&j) => {
                     stroke.color = Color32::GREEN;
                 }
                 _ => {}
@@ -181,7 +196,7 @@ impl WindowState {
             let shape = egui::Shape::closed_line(points, stroke);
             ui.painter().add(shape);
         }
-    
+
         for (j, shape) in current_rule.result.iter().enumerate() {
             let tile = &value.rules[shape.tile_id].tile;
             let id = response.id.with("subtile").with(j);
@@ -194,13 +209,127 @@ impl WindowState {
                 Sense::drag(),
             );
 
+            let shift = ui.input(|x| x.modifiers.shift);
             if resp.clicked() {
-                self.selection = Selection::Shapes { shape: vec![j] };
-                println!("shape click");
+                self.update_tile_selection(j, shift);
+                clicked_something = true;
             }
 
+            if resp.drag_started() {
+                self.drag_transforms.clear();
+                let mut maybe_drag = true;
+                if !self.is_selected(j) {
+                    if !shift {
+                        self.selection = Selection::Shapes { shapes: vec![j] }
+                    } else {
+                        maybe_drag = false;
+                    }
+                }
+                if maybe_drag {
+                    if let Selection::Shapes { shapes } = &self.selection {
+                        for shape in shapes {
+                            self.drag_transforms
+                                .push(current_rule.result[*shape].transform);
+                        }
+                        self.drag_start_p = resp.interact_pointer_pos().unwrap_or_default();
+                    }
+                    self.drag_activated = false;
+                }
+            }
+            if resp.dragged() && self.drag_transforms.len() > 0 {
+                if let Selection::Shapes { shapes } = &self.selection {
+                    let p2 = resp.interact_pointer_pos().unwrap_or_default();
+                    let transform = self.draw_transform.inverse();
+                    let mouse_movement = p2 - self.drag_start_p;
+                    let movement_draw =
+                        transform.transform_pos(p2) - transform.transform_pos(self.drag_start_p);
+                    if self.drag_activated || mouse_movement.length() > DRAG_START as f32 {
+                        self.drag_activated = true;
+                        let current_rule = &mut value.rules[self.current_tile];
+                        for (i, shape) in shapes.iter().enumerate() {
+                            current_rule.result[*shape].transform =
+                                self.drag_transforms[i].then_translate(to_tile_vec(movement_draw));
+                        }
+                    }
+
+                    if self.snap && !shift {
+                        let snap_points = value.snap_targets(self.current_tile, shapes);
+                        let movable_points = value.rule_points(self.current_tile, shapes);
+                        let mut best: Option<(Point, Point)> = None;
+                        let mut best_distance = 0f64;
+                        for targets in &snap_points {
+                            for movable_point in &movable_points {
+                                let dis = (*targets - *movable_point).length_squared();
+                                if dis < (SNAP_DISTANCE * SNAP_DISTANCE)
+                                    && (best.is_none() || dis < best_distance)
+                                {
+                                    best_distance = dis;
+                                    best = Some((*targets, *movable_point));
+                                }
+                            }
+                        }
+                        let s1 = snap_points.len();
+                        let s2 = movable_points.len();
+                        if let Some((t, f)) = best {
+                            painter.circle(
+                                self.draw_transform * to_pos(t),
+                                10.0,
+                                Color32::TRANSPARENT,
+                                Stroke::new(1.0, Color32::BLACK),
+                            );
+                            let current_rule = &mut value.rules[self.current_tile];
+                            let movement = t - f;
+                            for shape in shapes.iter() {
+                                current_rule.result[*shape].transform = current_rule.result
+                                    [*shape]
+                                    .transform
+                                    .then_translate(movement);
+                            }
+                        }
+                    }
+                }
+            }
         }
-    
+
+        if response.clicked() && !clicked_something {
+            self.selection = Selection::None;
+        }
+    }
+
+    fn is_selected(&self, tile: usize) -> bool {
+        match &self.selection {
+            Selection::Shapes { shapes: shape } if shape.contains(&tile) => true,
+            _ => false,
+        }
+    }
+
+    fn update_tile_selection(&mut self, tile: usize, shift: bool) {
+        if !shift {
+            self.selection = Selection::Shapes { shapes: vec![tile] };
+        } else {
+            let selection_copy = self.selection.clone();
+            self.selection = match &selection_copy {
+                Selection::Shapes { shapes } => {
+                    if shapes.contains(&tile) {
+                        let indexes = shapes
+                            .iter()
+                            .copied()
+                            .filter(|x| *x == tile)
+                            .collect::<Vec<usize>>();
+                        if indexes.len() > 0 {
+                            Selection::Shapes { shapes: indexes }
+                        } else {
+                            Selection::None
+                        }
+                    } else {
+                        let mut indexes = shapes.clone();
+                        indexes.push(tile);
+                        Selection::Shapes { shapes: indexes }
+                    }
+                }
+                _ => Selection::Shapes { shapes: vec![tile] },
+            }
+        }
     }
 
     fn tiling_editor_window(&mut self, ui: &mut egui::Ui, value: &mut TilingStep, window_id: Id) {
@@ -211,8 +340,6 @@ impl WindowState {
             .id(window_id)
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.label("Hello World!");
-
                 let selected_tile = self.current_tile;
                 egui::SidePanel::left("tileedit_left")
                     .resizable(true)
@@ -235,6 +362,11 @@ impl WindowState {
                         if rule_selection.response.changed() {
                             self.selection = Selection::None;
                         }
+
+                        let shift = ui.input(|x| x.modifiers.shift);
+                        ui.add_enabled_ui(!shift, |ui| {
+                            ui.checkbox(&mut self.snap, "Snap");
+                        });
 
                         ui.radio_value(&mut self.tool, Tool::Select, "Select");
                         ui.radio_value(&mut self.tool, Tool::Move, "Move");

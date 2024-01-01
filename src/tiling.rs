@@ -1,4 +1,6 @@
 use kurbo::{Affine, BezPath, Point, Rect, Vec2};
+
+#[derive(Clone)]
 pub struct Tile {
     pub corners: Vec<Point>,
 }
@@ -55,10 +57,13 @@ pub struct TilePlacement {
     pub tile_id: usize,
     pub transform: Affine,
 }
+
+#[derive(Clone)]
 pub struct TilingRule {
     pub tile: Tile,
     pub result: Vec<TilePlacement>,
 }
+
 pub struct TilingStep {
     pub rules: Vec<TilingRule>,
     pub expansion_factor: f64,
@@ -175,5 +180,36 @@ impl TilingStep {
             rules: Vec::new(),
             expansion_factor: 1.0,
         }
+    }
+
+    pub fn snap_targets(&self, rule: usize, excluded_shapes: &Vec<usize>) -> Vec<kurbo::Point> {
+        let mut result = Vec::new();
+        if let Some(rule) = self.rules.get(rule) {
+            result.extend(&rule.tile.corners);
+            for (i, placement) in rule.result.iter().enumerate() {
+                if excluded_shapes.contains(&i) {
+                    continue;
+                }
+                let other_tile = &self.rules[placement.tile_id];
+                for p in &other_tile.tile.corners {
+                    result.push(placement.transform * *p);
+                }
+            }
+        }
+        return result;
+    }
+
+    pub fn rule_points(&self, rule: usize, shapes: &Vec<usize>) -> Vec<kurbo::Point> {
+        let mut result = Vec::new();
+        if let Some(rule) = self.rules.get(rule) {
+            for id in shapes {
+                let placement = &rule.result[*id];
+                let other_tile = &self.rules[placement.tile_id];
+                for p in &other_tile.tile.corners {
+                    result.push(placement.transform * *p);
+                }
+            }
+        }
+        return result;
     }
 }
