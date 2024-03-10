@@ -24,13 +24,14 @@ enum Tool {
 #[derive(Clone, Debug)]
 enum Selection {
     None,
-    Points { shape: usize, corners: Vec<usize> },
+    //Points { shape: usize, corners: Vec<usize> },
     Shapes { shapes: Vec<usize> },
 }
 
 struct WindowState {
     open: bool,
     current_tile: usize,
+    anchor: Option<(usize, usize)>,
     draw_transform: RectTransform,
     tool: Tool,
     selection: Selection,
@@ -46,6 +47,7 @@ impl Default for WindowState {
         Self {
             open: Default::default(),
             current_tile: Default::default(),
+            anchor: None,
             draw_transform: RectTransform::identity(egui::Rect::ZERO),
             tool: Tool::Select,
             selection: Selection::None,
@@ -137,6 +139,8 @@ impl WindowState {
                     );
                 }
                 if point_resp.clicked() {
+                    self.anchor = Some((j, i));
+                    /*
                     clicked_something = true;
                     let shift = ui.input(|x| x.modifiers.shift);
                     if !shift {
@@ -169,17 +173,15 @@ impl WindowState {
                                 corners: vec![i],
                             },
                         }
-                    }
+                    }*/
                 }
 
-                match &self.selection {
-                    Selection::Points { shape, corners } if *shape == j && corners.contains(&i) => {
-                        painter.circle(
-                            *p,
-                            8.0,
-                            Color32::TRANSPARENT,
-                            Stroke::new(1.0, Color32::DARK_BLUE),
-                        );
+                match &self.anchor {
+                    Some( (subshape, corner )) if *subshape == j && i == *corner => {
+                        painter.line_segment([*p + Vec2::new(-8.0, -8.0),
+                                                *p - Vec2::new(-8.0, -8.0)], Stroke::new(1.0, Color32::DARK_BLUE));
+                     painter.line_segment([*p + Vec2::new(8.0, -8.0),
+                                                *p - Vec2::new(8.0, -8.0)], Stroke::new(1.0, Color32::DARK_BLUE));
                     }
                     _ => {}
                 }
@@ -293,6 +295,7 @@ impl WindowState {
 
         if response.clicked() && !clicked_something {
             self.selection = Selection::None;
+            self.anchor = None;
         }
     }
 
@@ -306,22 +309,33 @@ impl WindowState {
     fn update_tile_selection(&mut self, tile: usize, shift: bool) {
         if !shift {
             self.selection = Selection::Shapes { shapes: vec![tile] };
+            self.anchor = None;
         } else {
             let selection_copy = self.selection.clone();
             self.selection = match &selection_copy {
                 Selection::Shapes { shapes } => {
                     if shapes.contains(&tile) {
+                        // remove from seleciton tile
                         let indexes = shapes
                             .iter()
                             .copied()
-                            .filter(|x| *x == tile)
+                            .filter(|x| *x != tile)
                             .collect::<Vec<usize>>();
                         if indexes.len() > 0 {
+                            let a = self.anchor;
+                            match self.anchor {
+                                Some((subtile , _)) if subtile == tile => {
+                                    self.anchor = None;
+                                }
+                                _ => {}
+                            }
                             Selection::Shapes { shapes: indexes }
                         } else {
+                            self.anchor = None;
                             Selection::None
                         }
                     } else {
+                        // add to selection
                         let mut indexes = shapes.clone();
                         indexes.push(tile);
                         Selection::Shapes { shapes: indexes }
