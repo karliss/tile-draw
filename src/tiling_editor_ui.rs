@@ -19,6 +19,17 @@ pub struct TilingEditorWidget {}
 enum Tool {
     Select,
     Move,
+    Rotate,
+    MoveRotate,
+    ScaleRotate,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DragMode {
+    None,
+    Move,
+    Rotate,
+    ScaleRotate,
 }
 
 #[derive(Clone, Debug)]
@@ -28,18 +39,26 @@ enum Selection {
     Shapes { shapes: Vec<usize> },
 }
 
+#[derive(Clone, Copy)]
+struct SubshapeCorner {
+    subshape: usize,
+    corner: usize,
+}
+
 struct WindowState {
     open: bool,
     current_tile: usize,
-    anchor: Option<(usize, usize)>,
+    anchor: Option<SubshapeCorner>,
     draw_transform: RectTransform,
     tool: Tool,
     selection: Selection,
     drag_transforms: Vec<Affine>,
     drag_start_p: Pos2,
     drag_activated: bool,
+    drag_grabp: Option<SubshapeCorner>,
     snap: bool,
-    last_snap_pint:Option<Pos2>,
+    last_snap_pint: Option<Pos2>,
+    drag_mode: DragMode,
 }
 
 impl Default for WindowState {
@@ -56,6 +75,8 @@ impl Default for WindowState {
             drag_activated: false,
             snap: true,
             last_snap_pint: None,
+            drag_grabp: None,
+            drag_mode: DragMode::None,
         }
     }
 }
@@ -109,7 +130,7 @@ impl WindowState {
         &mut self,
         ui: &mut egui::Ui,
         value: &mut TilingStep,
-        (response, painter): &(Response, Painter),
+        resp_painter: &(Response, Painter),
     ) {
         let mut clicked_something = false;
 
@@ -120,84 +141,20 @@ impl WindowState {
         let draw_mouse_pos = to_point(self.draw_transform.inverse().transform_pos(mouse_pos));
 
         for (j, shape) in current_rule.result.iter().enumerate() {
-            let tile = &value.rules[shape.tile_id].tile;
-
-            let points = as_points(tile, &shape.transform, &self.draw_transform);
-            for (i, p) in points.iter().enumerate() {
-                let point_rect = Rect::from_center_size(*p, egui::Vec2::new(8.0, 8.0));
-                let point_resp = ui.interact(
-                    point_rect,
-                    response.id.with("point").with(j).with(i),
-                    Sense::drag(),
-                );
-                if point_resp.hovered() {
-                    painter.circle(
-                        *p,
-                        7.0,
-                        Color32::TRANSPARENT,
-                        Stroke::new(1.0, Color32::GREEN),
-                    );
-                }
-                if point_resp.clicked() {
-                    self.anchor = Some((j, i));
-                    /*
-                    clicked_something = true;
-                    let shift = ui.input(|x| x.modifiers.shift);
-                    if !shift {
-                        self.selection = Selection::Points {
-                            shape: j,
-                            corners: vec![i],
-                        };
-                    } else {
-                        let selection_copy = self.selection.clone();
-                        self.selection = match &selection_copy {
-                            Selection::Points { shape, corners } if *shape == j => {
-                                if corners.contains(&i) {
-                                    let indexes =
-                                        corners.iter().copied().filter(|x| *x == i).collect();
-                                    Selection::Points {
-                                        shape: j,
-                                        corners: indexes,
-                                    }
-                                } else {
-                                    let mut indexes = corners.clone();
-                                    indexes.push(i);
-                                    Selection::Points {
-                                        shape: j,
-                                        corners: indexes,
-                                    }
-                                }
-                            }
-                            _ => Selection::Points {
-                                shape: j,
-                                corners: vec![i],
-                            },
-                        }
-                    }*/
-                }
-
-                match &self.anchor {
-                    Some( (subshape, corner )) if *subshape == j && i == *corner => {
-                        painter.line_segment([*p + Vec2::new(-8.0, -8.0),
-                                                *p - Vec2::new(-8.0, -8.0)], Stroke::new(1.0, Color32::DARK_BLUE));
-                     painter.line_segment([*p + Vec2::new(8.0, -8.0),
-                                                *p - Vec2::new(8.0, -8.0)], Stroke::new(1.0, Color32::DARK_BLUE));
-                    }
-                    _ => {}
+            if let Selection::Shapes { shapes } = &self.selection {
+                if shapes.contains(&j) {
+                    continue;
                 }
             }
-
-            let mut stroke = Stroke::new(1.0, Color32::BLACK);
-            match &self.selection {
-                Selection::Shapes { shapes: shape } if shape.contains(&j) => {
-                    stroke.color = Color32::GREEN;
-                }
-                _ => {}
-            }
-
-            let shape = egui::Shape::closed_line(points, stroke);
-            ui.painter().add(shape);
+            self.process_corners(value, ui, resp_painter, &current_rule, j, shape);
         }
+        if let Selection::Shapes { shapes } = self.selection.clone() {
+            for j in shapes {
+                let shape = &current_rule.result[j];
+                self.process_corners(value, ui, resp_painter, &current_rule, j, shape);
+            }
+        }
+        let (response, painter) = resp_painter;
 
         for (j, shape) in current_rule.result.iter().enumerate() {
             let tile = &value.rules[shape.tile_id].tile;
@@ -228,33 +185,98 @@ impl WindowState {
                     }
                 }
                 if maybe_drag {
-                    if let Selection::Shapes { shapes } = &self.selection {
-                        for shape in shapes {
-                            self.drag_transforms
-                                .push(current_rule.result[*shape].transform);
-                        }
-                        self.drag_start_p = resp.interact_pointer_pos().unwrap_or_default();
-                    }
-                    self.drag_activated = false;
+                    self.start_drag(value, ui, resp_painter, &current_rule, None, resp.interact_pointer_pos().unwrap_or_default());
                 }
             }
-            if resp.dragged() && self.drag_transforms.len() > 0 {
-                if let Selection::Shapes { shapes } = &self.selection {
-                    let p2 = resp.interact_pointer_pos().unwrap_or_default();
-                    let transform = self.draw_transform.inverse();
-                    let mouse_movement = p2 - self.drag_start_p;
-                    let movement_draw =
-                        transform.transform_pos(p2) - transform.transform_pos(self.drag_start_p);
-                    if self.drag_activated || mouse_movement.length() > DRAG_START as f32 {
-                        self.drag_activated = true;
-                        let current_rule = &mut value.rules[self.current_tile];
-                        for (i, shape) in shapes.iter().enumerate() {
-                            current_rule.result[*shape].transform =
-                                self.drag_transforms[i].then_translate(to_tile_vec(movement_draw));
-                        }
-                    }
+            if resp.dragged() && self.drag_transforms.len() > 0 && self.drag_mode == DragMode::Move
+            {
+                self.process_drag(value, ui, resp_painter, &current_rule, &resp, shift)
+            }
+        }
 
-                    if self.snap && !shift {
+        if response.clicked() && !clicked_something {
+            self.selection = Selection::None;
+            self.anchor = None;
+        }
+    }
+
+    fn is_selected(&self, tile: usize) -> bool {
+        match &self.selection {
+            Selection::Shapes { shapes: shape } if shape.contains(&tile) => true,
+            _ => false,
+        }
+    }
+
+    fn start_drag(
+        &mut self,
+        value: &mut TilingStep,
+        ui: &mut egui::Ui,
+        resp_painter: &(Response, Painter),
+        current_rule: &TilingRule,
+        drag_corner: Option<SubshapeCorner>,
+        drag_startp: Pos2
+    ) {
+        self.drag_transforms.clear();
+        if let Selection::Shapes { shapes } = &self.selection {
+            for shape in shapes {
+                self.drag_transforms
+                    .push(current_rule.result[*shape].transform);
+            }
+            self.drag_start_p = drag_startp;//resp_painter.0.interact_pointer_pos().unwrap_or_default();
+            self.drag_grabp = drag_corner;
+            self.drag_mode = match self.tool {
+                Tool::Move => DragMode::Move,
+                Tool::Rotate if drag_corner.is_some() => DragMode::Rotate,
+                Tool::MoveRotate => {
+                    if drag_corner.is_some() {
+                        DragMode::Rotate
+                    } else {
+                        DragMode::Move
+                    }
+                }
+                Tool::ScaleRotate if drag_corner.is_some() => DragMode::ScaleRotate,
+                _ => DragMode::None,
+            }
+        }
+        self.drag_activated = false;
+    }
+
+    fn process_drag(
+        &mut self,
+        value: &mut TilingStep,
+        ui: &mut egui::Ui,
+        resp_painter: &(Response, Painter),
+        current_rule: &TilingRule,
+        resp: &Response,
+        shift: bool,
+    ) {
+        let p2 = resp.interact_pointer_pos().unwrap_or_default();
+        let transform = self.draw_transform.inverse();
+        let mouse_movement = p2 - self.drag_start_p;
+
+        let movement_draw =
+            transform.transform_pos(p2) - transform.transform_pos(self.drag_start_p);
+
+        if mouse_movement.length() > DRAG_START as f32 {
+            self.drag_activated = true;
+        }
+
+        if !self.drag_activated || self.drag_transforms.is_empty() {
+            return;
+        }
+
+        let can_snap = self.snap && !shift;
+
+        if let Selection::Shapes { shapes } = &self.selection {
+            match self.drag_mode {
+                DragMode::None => {}
+                DragMode::Move => {
+                    let current_rule = &mut value.rules[self.current_tile];
+                    for (i, shape) in shapes.iter().enumerate() {
+                        current_rule.result[*shape].transform =
+                            self.drag_transforms[i].then_translate(to_tile_vec(movement_draw));
+                    }
+                    if can_snap {
                         let snap_points = value.snap_targets(self.current_tile, shapes);
                         let movable_points = value.rule_points(self.current_tile, shapes);
                         let mut best: Option<(Point, Point)> = None;
@@ -273,7 +295,7 @@ impl WindowState {
                         let s1 = snap_points.len();
                         let s2 = movable_points.len();
                         if let Some((t, f)) = best {
-                            painter.circle(
+                            resp_painter.1.circle(
                                 self.draw_transform * to_pos(t),
                                 10.0,
                                 Color32::TRANSPARENT,
@@ -282,28 +304,104 @@ impl WindowState {
                             let current_rule = &mut value.rules[self.current_tile];
                             let movement = t - f;
                             for shape in shapes.iter() {
-                                current_rule.result[*shape].transform = current_rule.result
-                                    [*shape]
+                                current_rule.result[*shape].transform = current_rule.result[*shape]
                                     .transform
                                     .then_translate(movement);
                             }
                         }
                     }
                 }
+                DragMode::Rotate => {
+                    eprintln!("not implemented");
+                }
+                DragMode::ScaleRotate => {
+                    eprintln!("not implemented");
+                }
             }
-        }
-
-        if response.clicked() && !clicked_something {
-            self.selection = Selection::None;
-            self.anchor = None;
         }
     }
 
-    fn is_selected(&self, tile: usize) -> bool {
-        match &self.selection {
-            Selection::Shapes { shapes: shape } if shape.contains(&tile) => true,
-            _ => false,
+    fn process_corners(
+        &mut self,
+        value: &mut TilingStep,
+        ui: &mut egui::Ui,
+        resp_painter: &(Response, Painter),
+        current_rule: &TilingRule,
+        j: usize,
+        shape: &TilePlacement,
+    ) {
+        let tile = &value.rules[shape.tile_id].tile;
+
+        let points = as_points(tile, &shape.transform, &self.draw_transform);
+        let shift = ui.input(|x| x.modifiers.shift);
+        for (i, p) in points.iter().enumerate() {
+            let point_rect = Rect::from_center_size(*p, egui::Vec2::new(8.0, 8.0));
+            let point_resp = ui.interact(
+                point_rect,
+                resp_painter.0.id.with("point").with(j).with(i),
+                Sense::drag(),
+            );
+            if point_resp.hovered() {
+                resp_painter.1.circle(
+                    *p,
+                    7.0,
+                    Color32::TRANSPARENT,
+                    Stroke::new(1.0, Color32::GREEN),
+                );
+            }
+            if point_resp.clicked() {
+                self.anchor = Some(SubshapeCorner {
+                    subshape: j,
+                    corner: i,
+                });
+            }
+            if point_resp.drag_started() {
+                if let Selection::Shapes { shapes } = &self.selection {
+                    if shapes.contains(&j) {
+                        self.start_drag(
+                            value,
+                            ui,
+                            resp_painter,
+                            current_rule,
+                            Some(SubshapeCorner {
+                                subshape: j,
+                                corner: i,
+                            }),
+                            point_resp.interact_pointer_pos().unwrap_or_default()
+                        )
+                    }
+                }
+            } else if point_resp.dragged() {
+                self.process_drag(value, ui, resp_painter, current_rule, &point_resp, shift)
+            } else if point_resp.drag_released() {
+                self.drag_mode = DragMode::None;
+            }
+
+            match &self.anchor {
+                Some(corner) if corner.subshape == j && i == corner.corner => {
+                    resp_painter.1.line_segment(
+                        [*p + Vec2::new(-8.0, -8.0), *p - Vec2::new(-8.0, -8.0)],
+                        Stroke::new(1.0, Color32::DARK_BLUE),
+                    );
+                    resp_painter.1.line_segment(
+                        [*p + Vec2::new(8.0, -8.0), *p - Vec2::new(8.0, -8.0)],
+                        Stroke::new(1.0, Color32::DARK_BLUE),
+                    );
+                }
+                _ => {}
+            }
         }
+
+        let mut stroke = Stroke::new(1.0, Color32::BLACK);
+        match &self.selection {
+            Selection::Shapes { shapes: shape } if shape.contains(&j) => {
+                stroke.color = Color32::GREEN;
+            }
+            _ => {}
+        }
+
+        let shape = egui::Shape::closed_line(points, stroke);
+        ui.painter().add(shape);
     }
 
     fn update_tile_selection(&mut self, tile: usize, shift: bool) {
@@ -322,9 +420,9 @@ impl WindowState {
                             .filter(|x| *x != tile)
                             .collect::<Vec<usize>>();
                         if indexes.len() > 0 {
-                            let a = self.anchor;
-                            match self.anchor {
-                                Some((subtile , _)) if subtile == tile => {
+                            let a: &Option<SubshapeCorner> = &self.anchor;
+                            match a {
+                                Some(corner) if corner.subshape == tile => {
                                     self.anchor = None;
                                 }
                                 _ => {}
@@ -384,6 +482,8 @@ impl WindowState {
 
                         ui.radio_value(&mut self.tool, Tool::Select, "Select");
                         ui.radio_value(&mut self.tool, Tool::Move, "Move");
+                        ui.radio_value(&mut self.tool, Tool::Rotate, "Rotate");
+                        ui.radio_value(&mut self.tool, Tool::MoveRotate, "Move+Rotate");
                         /*egui::ScrollArea::vertical().show(ui, |ui| {
 
                         });*/
