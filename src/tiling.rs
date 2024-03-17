@@ -1,3 +1,5 @@
+use std::ops::Index;
+
 use kurbo::{Affine, BezPath, Point, Rect, Vec2};
 
 #[derive(Clone)]
@@ -70,6 +72,12 @@ pub struct TilingStep {
 }
 
 const DEFAULT_POLYGON_LIMIT: usize = 1000000;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SubshapeCorner {
+    pub subshape: usize,
+    pub corner: usize,
+}
 
 impl TilingStep {
     pub fn expand_tile(&self, placed_tile: &TilePlacement, output: &mut Vec<TilePlacement>) {
@@ -211,5 +219,14 @@ impl TilingStep {
             }
         }
         return result;
+    }
+
+    pub fn subshape_point(&self, rule: usize, corner: Option<SubshapeCorner>) -> Option<(&TilePlacement, kurbo::Point)> {
+        let corner = corner?;
+        let current_rule = self.rules.get(rule)?;
+        let subshape = current_rule.result.get(corner.subshape)?;
+        let tile: &TilingRule = self.rules.get(subshape.tile_id)?;
+        let point = tile.tile.corners.get(corner.corner)?;
+        return Some((subshape, *point));
     }
 }
