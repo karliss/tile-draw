@@ -162,9 +162,9 @@ impl WindowState {
                 Sense::drag(),
             );
 
-            let shift = ui.input(|x| x.modifiers.shift);
+            let modifiers = ui.input(|x| x.modifiers );
             if resp.clicked() {
-                self.update_tile_selection(j, shift);
+                self.update_tile_selection(j, modifiers.shift);
                 clicked_something = true;
             }
 
@@ -172,7 +172,7 @@ impl WindowState {
                 self.drag_transforms.clear();
                 let mut maybe_drag = true;
                 if !self.is_selected(j) {
-                    if !shift {
+                    if !modifiers.shift {
                         self.shape_selection = vec![j]
                     } else {
                         maybe_drag = false;
@@ -191,7 +191,7 @@ impl WindowState {
             }
             if resp.dragged() && self.drag_transforms.len() > 0 && self.drag_mode == DragMode::Move
             {
-                self.process_drag(value, ui, resp_painter, &current_rule, &resp, shift)
+                self.process_drag(value, ui, resp_painter, &current_rule, &resp, modifiers.shift, modifiers.alt)
             }
         }
 
@@ -281,6 +281,7 @@ impl WindowState {
         current_rule: &TilingRule,
         resp: &Response,
         shift: bool,
+        snap_closest: bool
     ) {
         let p2 = resp.interact_pointer_pos().unwrap_or_default();
         let transform = self.draw_transform.inverse();
@@ -313,7 +314,17 @@ impl WindowState {
                 }
                 if can_snap {
                     let snap_points = value.snap_targets(self.current_tile, shapes);
-                    let movable_points = value.rule_points(self.current_tile, shapes);
+                    let movable_points = if snap_closest  {{
+                        let p  = value.rule_points(self.current_tile, shapes);
+                        if p.is_empty() {
+                            vec![]
+                        }  else {
+                            let f = p
+                            vec![]
+                        }
+                    } else {
+                        value.rule_points(self.current_tile, shapes)
+                    };
                     let mut best: Option<(Point, Point)> = None;
                     let mut best_distance = 0f64;
                     for targets in &snap_points {
@@ -327,8 +338,7 @@ impl WindowState {
                             }
                         }
                     }
-                    let s1 = snap_points.len();
-                    let s2 = movable_points.len();
+
                     if let Some((t, f)) = best {
                         resp_painter.1.circle(
                             self.draw_transform * to_pos(t),
@@ -390,7 +400,9 @@ impl WindowState {
         let tile = &value.rules[shape.tile_id].tile;
 
         let points = as_points(tile, &shape.transform, &self.draw_transform);
-        let shift = ui.input(|x| x.modifiers.shift);
+        let (shift, alt) = ui.input(|x| (x.modifiers.shift, x.modifiers.alt));
+
+        
         for (i, p) in points.iter().enumerate() {
             let point_rect = Rect::from_center_size(*p, egui::Vec2::new(8.0, 8.0));
             let point_resp = ui.interact(
@@ -427,7 +439,7 @@ impl WindowState {
                     )
                 }
             } else if point_resp.dragged() {
-                self.process_drag(value, ui, resp_painter, current_rule, &point_resp, shift)
+                self.process_drag(value, ui, resp_painter, current_rule, &point_resp, shift, alt)
             } else if point_resp.drag_released() {
                 self.drag_mode = DragMode::None;
             }
@@ -517,6 +529,7 @@ impl WindowState {
                         /*egui::ScrollArea::vertical().show(ui, |ui| {
 
                         });*/
+                        ui.label("Shift+click -  multiseletion\nShift+drag - disable snapping\nCtrl+click - set rotation center")
                     });
 
                 egui::SidePanel::right("tileedit_right")
