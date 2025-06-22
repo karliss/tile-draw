@@ -1,13 +1,13 @@
 use std::{time::Instant, vec};
 
-use kurbo::{Affine, Point, Rect, Vec2};
+use ::kurbo::{Affine, Point, Rect, Vec2};
 use tiling::*;
 use whiskers::prelude::*;
 
 mod tiling;
 mod tiling_editor_ui;
 
-#[derive(Sketch)]
+#[sketch_app]
 struct TilingSketch {
     #[param(slider, min = 20.0, max = 400.0)]
     width: f64,
@@ -20,6 +20,8 @@ struct TilingSketch {
     fixed_size_max_level: bool,
     levels: usize,
 
+    //#[skip]
+    //#[serde(skip)]
     tiling: TilingStep,
 }
 
@@ -73,7 +75,7 @@ impl App for TilingSketch {
 }
 
 fn main() -> Result {
-    let SQUARE_GRID: TilingStep = TilingStep {
+    let _square_grid: TilingStep = TilingStep {
         rules: vec![TilingRule {
             tile: Tile {
                 corners: vec![
@@ -208,9 +210,13 @@ fn main() -> Result {
     };
 
     let mut data = TilingSketch::default();
-    data.tiling = socolar_5;
-    Runner::new(data)
+    
+    TilingSketch::runner()
         .with_page_size_options(PageSize::A5H)
         .with_layout_options(LayoutOptions::Center)
         .run()
+    /*Runner::new(data)
+        .with_page_size_options(PageSize::A5H)
+        .with_layout_options(LayoutOptions::Center)
+        .run()*/
 }

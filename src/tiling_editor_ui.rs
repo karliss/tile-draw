@@ -5,12 +5,12 @@ use std::vec;
 
 use crate::tiling::*;
 use egui::{emath, Id, Rect};
-use kurbo::{Affine, BezPath, Point, Shape};
 use whiskers::prelude::egui::emath::RectTransform;
 use whiskers::prelude::egui::epaint::PathShape;
 use whiskers::prelude::egui::{epaint, Color32, Painter, Pos2, Response, Sense, Stroke, Vec2};
-use whiskers::widgets::Widget;
-use whiskers::{prelude::*, register_widget_ui};
+use whiskers_widgets::Widget;
+use whiskers::{prelude::*};
+use ::kurbo::{Affine, BezPath, Point, Shape};
 
 #[derive(Default)]
 pub struct TilingEditorWidget {}
@@ -191,7 +191,7 @@ impl WindowState {
             }
             if resp.dragged() && self.drag_transforms.len() > 0 && self.drag_mode == DragMode::Move
             {
-                self.process_drag(value, ui, resp_painter, &current_rule, &resp, modifiers.shift, modifiers.alt)
+                self.process_drag(value, ui, resp_painter, &current_rule, &resp, modifiers.shift, modifiers.alt, modifiers.ctrl)
             }
         }
 
@@ -281,7 +281,8 @@ impl WindowState {
         current_rule: &TilingRule,
         resp: &Response,
         shift: bool,
-        snap_closest: bool
+        snap_closest: bool,
+        mod3: bool,
     ) {
         let p2 = resp.interact_pointer_pos().unwrap_or_default();
         let transform = self.draw_transform.inverse();
@@ -314,12 +315,17 @@ impl WindowState {
                 }
                 if can_snap {
                     let snap_points = value.snap_targets(self.current_tile, shapes);
-                    let movable_points = if snap_closest  {{
+                    let movable_points = if snap_closest  {
                         let p  = value.rule_points(self.current_tile, shapes);
-                        if p.is_empty() {
-                            vec![]
-                        }  else {
-                            let f = p
+                        if let Some( first) = p.first() {
+                            let mut best = *first;
+                            for point in p {
+                                if (point-current_drag_target).length_squared() < (best - current_drag_target).length_squared() {
+                                    best = point;
+                                }
+                            }
+                            vec![best]
+                        } else {
                             vec![]
                         }
                     } else {
@@ -361,11 +367,11 @@ impl WindowState {
                 let drag_corner_pos =
                     value.subshape_point(self.current_tile,  self.drag_grabp).unwrap().1;
 
-                let drag_corner_pos = self.drag_transforms[(self
+                let drag_corner_pos = self.drag_transforms[self
                     .shape_selection
                     .iter()
                     .position(|x| *x == drag_corner.subshape)
-                    .unwrap_or(0))]
+                    .unwrap_or(0)]
                     * drag_corner_pos;
 
                 let anchor = value.subshape_point(self.current_tile, self.anchor).unwrap();
@@ -373,7 +379,11 @@ impl WindowState {
 
                 
 
-                let angle = (current_drag_target - anchor_p).angle() - (drag_corner_pos - anchor_p).angle();
+                let mut angle = (current_drag_target - anchor_p).angle() - (drag_corner_pos - anchor_p).angle();
+                if ui.input(|x| x.modifiers.ctrl) {
+                    let angle_deg = (angle.to_degrees() / 15f64).round() * 15f64;
+                    angle = angle_deg.to_radians();
+                }
                 //let drag_corner_pos = drag_corner_shape.transform *  ;
 
                 let current_rule: &mut TilingRule = &mut value.rules[self.current_tile];
@@ -400,7 +410,8 @@ impl WindowState {
         let tile = &value.rules[shape.tile_id].tile;
 
         let points = as_points(tile, &shape.transform, &self.draw_transform);
-        let (shift, alt) = ui.input(|x| (x.modifiers.shift, x.modifiers.alt));
+        //let (shift, alt,) = ;
+        let modifiers = ui.input(|x| (x.modifiers));
 
         
         for (i, p) in points.iter().enumerate() {
@@ -439,8 +450,8 @@ impl WindowState {
                     )
                 }
             } else if point_resp.dragged() {
-                self.process_drag(value, ui, resp_painter, current_rule, &point_resp, shift, alt)
-            } else if point_resp.drag_released() {
+                self.process_drag(value, ui, resp_painter, current_rule, &point_resp, modifiers.shift, modifiers.alt, modifiers.ctrl)
+            } else if point_resp.drag_stopped() {
                 self.drag_mode = DragMode::None;
             }
 
@@ -486,6 +497,23 @@ impl WindowState {
         }
     }
 
+    fn add_rule(&mut self, ui: &mut egui::Ui, rule_se: &mut TilingStep) {
+        
+        let tile =  Tile {
+            corners: vec![
+                Point { x: 0f64, y: 0f64 },
+                Point { x: 0f64, y: 1f64 },
+                Point { x: 1f64, y: 1f64 },
+                Point { x: 1f64, y: 0f64 },
+            ],
+        };
+        let rule = TilingRule {
+            tile,
+            result: vec![]
+        };
+        rule_se.rules.push(rule);
+    }
+
     fn tiling_editor_window(&mut self, ui: &mut egui::Ui, value: &mut TilingStep, window_id: Id) {
         let ctx = ui.ctx();
 
@@ -516,6 +544,16 @@ impl WindowState {
                         if rule_selection.response.changed() {
                             self.shape_selection.clear();
                         }
+                        ui.horizontal(|ui| {
+                            if ui.button("Add rule").clicked() {
+                                self.add_rule(ui, value);
+                                self.current_tile = value.rules.len() - 1;
+                            }
+                            if ui.button("Remove").clicked() {
+                                value.remove_tile(self.current_tile);
+                                self.current_tile = self.current_tile.checked_sub(1).unwrap_or(0);
+                            }
+                        });
 
                         let shift = ui.input(|x| x.modifiers.shift);
                         ui.add_enabled_ui(!shift, |ui| {
@@ -540,7 +578,7 @@ impl WindowState {
                         ui.vertical_centered(|ui| {
                             ui.heading("Right Panel");
                         });
-                        egui::ScrollArea::vertical().show(ui, |ui| {});
+                        egui::ScrollArea::vertical().show(ui, |_ui| {});
                     });
 
                 egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -576,7 +614,7 @@ impl WindowState {
                             egui::Stroke::new(1.0, Color32::GRAY),
                         );
 
-                        if !(0..=value.rules.len()).contains(&(self.current_tile)) {
+                        if !(0..value.rules.len()).contains(&(self.current_tile)) {
                             return;
                         }
                         let rule = &value.rules[self.current_tile];
@@ -616,4 +654,4 @@ impl Widget<TilingStep> for TilingEditorWidget {
     }
 }
 
-register_widget_ui!(TilingStep, TilingEditorWidget);
+whiskers_widgets::register_widget_ui!(TilingStep, TilingEditorWidget);

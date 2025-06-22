@@ -1,8 +1,10 @@
 use std::ops::Index;
 
 use kurbo::{Affine, BezPath, Point, Rect, Vec2};
+use serde;
 
 #[derive(Clone)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct Tile {
     pub corners: Vec<Point>,
 }
@@ -55,17 +57,21 @@ impl Tile {
 }
 
 #[derive(Clone)]
+
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct TilePlacement {
     pub tile_id: usize,
     pub transform: Affine,
 }
 
 #[derive(Clone)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct TilingRule {
     pub tile: Tile,
     pub result: Vec<TilePlacement>,
 }
 
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct TilingStep {
     pub rules: Vec<TilingRule>,
     pub expansion_factor: f64,
@@ -140,7 +146,7 @@ impl TilingStep {
         for _i in 0..levels {
             for tile in &a {
                 let tile_bounds = self.estimate_bounds(tile);
-                if tile_bounds.intersect(bounds).is_empty() {
+                if tile_bounds.intersect(bounds).is_zero_area() {
                     continue;
                 }
                 self.expand_tile(&tile, &mut b);
@@ -163,6 +169,9 @@ impl TilingStep {
         bounds: Option<Rect>,
         output: &mut Vec<TilePlacement>,
     ) {
+        if self.rules.is_empty() {
+            return;
+        }
         let input = vec![TilePlacement {
             tile_id: 1,
             transform: Affine::scale(initial_scale),
@@ -228,5 +237,24 @@ impl TilingStep {
         let tile: &TilingRule = self.rules.get(subshape.tile_id)?;
         let point = tile.tile.corners.get(corner.corner)?;
         return Some((subshape, *point));
+    }
+
+    pub fn remove_tile(&mut self, index: usize) {
+        if index >= self.rules.len() {
+            return;
+        }
+        for rule in &mut self.rules  {
+            rule.result.retain_mut(|x| {
+                if x.tile_id == index {
+                    false
+                } else {
+                    if x.tile_id > index {
+                        x.tile_id -= 1;
+                    }
+                    true
+                }
+            });
+        }
+        self.rules.remove(index);
     }
 }
